@@ -57,13 +57,13 @@ function MessageBox:EnsureRows(scrollChild, rowTable, count)
     end
 end
 
-function MessageBox:CreateHeaderFrame(parent, onClickCallback)
+function MessageBox:CreateHeaderFrame(parent, onClickCallback, plusName, minusName)
     local header = CreateFrame("Button", nil, parent)
     header:SetWidth(120)
     header:SetHeight(20)
     header:SetScript("OnClick", onClickCallback)
 
-    local plusButton = CreateFrame("Button", nil, header)
+    local plusButton = CreateFrame("Button", plusName, header)
     plusButton:SetWidth(16)
     plusButton:SetHeight(16)
     plusButton:SetPoint("LEFT", 0, 0)
@@ -74,7 +74,7 @@ function MessageBox:CreateHeaderFrame(parent, onClickCallback)
     plusButton.text:SetText("+")
     plusButton.text:Hide()
 
-    local minusButton = CreateFrame("Button", nil, header)
+    local minusButton = CreateFrame("Button", minusName, header)
     minusButton:SetWidth(16)
     minusButton:SetHeight(16)
     minusButton:SetPoint("LEFT", 0, 0)
@@ -478,9 +478,9 @@ function MessageBox:CreateFrame()
     MessageBox.clipChild = clipChild
 
     local searchBox = CreateFrame("EditBox", "MessageBoxContactSearch", contactFrame, "InputBoxTemplate")
-    searchBox:SetWidth(120)
+    searchBox:SetWidth(L.CONTACT_WIDTH - 10)
     searchBox:SetHeight(20)
-    searchBox:SetPoint("TOP", contactFrame, "TOP", 0, -6)
+    searchBox:SetPoint("TOPLEFT", contactFrame, "TOPLEFT", 5, -6)
     searchBox:SetAutoFocus(false)
     searchBox:SetFontObject("GameFontHighlightSmall")
     
@@ -516,13 +516,13 @@ function MessageBox:CreateFrame()
     MessageBox.friendsHeader = MessageBox:CreateHeaderFrame(contactFrame, function()
         MessageBox.settings.friendsListCollapsed = not MessageBox.settings.friendsListCollapsed
         MessageBox:UpdateContactList()
-    end)
+    end, "MessageBoxFriendsHeaderPlus", "MessageBoxFriendsHeaderMinus")
     MessageBox.friendsHeader.text:SetText("Friends")
     
     MessageBox.conversationsHeader = MessageBox:CreateHeaderFrame(contactFrame, function()
         MessageBox.settings.conversationsListCollapsed = not MessageBox.settings.conversationsListCollapsed
         MessageBox:UpdateContactList()
-    end)
+    end, "MessageBoxConversationsHeaderPlus", "MessageBoxConversationsHeaderMinus")
     MessageBox.conversationsHeader.text:SetText("Conversations")
 
     local friendsScroll = CreateFrame("ScrollFrame", "MessageBoxFriendsScroll", contactFrame, "FauxScrollFrameTemplate")
@@ -817,12 +817,66 @@ function MessageBox:CreateFrame()
     bellButton.UpdateState()
     MessageBox.bellButton = bellButton
 
+    local openWindowButton = CreateFrame("Button", nil, frame)
+    openWindowButton:SetWidth(20)
+    openWindowButton:SetHeight(20)
+    openWindowButton:SetPoint("LEFT", bellButton, "RIGHT", 5, 0)
+    openWindowButton:SetHighlightTexture(MessageBox.textures.minimizeBtnHi)
+
+    openWindowButton.UpdateState = function()
+        if MessageBox.settings.openWindowOnWhisper then
+            openWindowButton:SetNormalTexture(MessageBox.textures.envelopeOpen)
+            openWindowButton:SetAlpha(1.0)
+            openWindowButton:GetNormalTexture():SetVertexColor(1, 1, 1)
+        else
+            openWindowButton:SetNormalTexture(MessageBox.textures.envelope)
+            openWindowButton:SetAlpha(0.65)
+            openWindowButton:GetNormalTexture():SetVertexColor(1, 1, 1)
+        end
+    end
+
+    openWindowButton:SetScript("OnClick", function()
+        MessageBox.settings.openWindowOnWhisper = not MessageBox.settings.openWindowOnWhisper
+        this.UpdateState()
+        MessageBox:UpdateMinimapBadge()
+        if MessageBox.settingsFrame and MessageBox.settingsFrame.checks and MessageBox.settingsFrame.checks["openWindowOnWhisper"] then
+            MessageBox.settingsFrame.checks["openWindowOnWhisper"]:SetChecked(MessageBox.settings.openWindowOnWhisper)
+        end
+        if GameTooltip:IsOwned(this) then
+            this:GetScript("OnEnter")()
+        end
+    end)
+
+    openWindowButton:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Open Window on New Whisper")
+        if MessageBox.settings.openWindowOnWhisper then
+            GameTooltip:AddLine("Status: |cff00ff00Open window|r", 1, 1, 1)
+            GameTooltip:AddLine("The floating notification icon is not used.", 0.8, 0.8, 0.8, true)
+        else
+            GameTooltip:AddLine("Status: |cffffcc00Notification icon|r", 1, 1, 1)
+        end
+        GameTooltip:Show()
+    end)
+    openWindowButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    openWindowButton.UpdateState()
+    MessageBox.openWindowButton = openWindowButton
+
     local settingsDropDown = CreateFrame("Frame", "MessageBoxSettingsDropDown", frame, "UIDropDownMenuTemplate")
 
     -- Throttled relayout on resize
     MessageBox.relayoutDirty = false
     MessageBox.relayoutLastUpdate = 0
     frame:SetScript("OnUpdate", function()
+        if MessageBox.pendingWhisperFocusFrames then
+            MessageBox.pendingWhisperFocusFrames = MessageBox.pendingWhisperFocusFrames - 1
+            if MessageBox.pendingWhisperFocusFrames <= 0 then
+                MessageBox.pendingWhisperFocusFrames = nil
+                if MessageBox.whisperInput and MessageBox.frame and MessageBox.frame:IsVisible() then
+                    MessageBox.whisperInput:SetFocus()
+                end
+            end
+        end
         if not MessageBox.relayoutDirty then return end
         local now = GetTime()
         if (now - MessageBox.relayoutLastUpdate) < 0.05 then return end
@@ -857,10 +911,9 @@ function MessageBox:RelayoutMainFrame()
         self.contactFrame:SetWidth(sidebarWidth)
     end
 
-    -- Search box width
     local searchBox = getglobal("MessageBoxContactSearch")
     if searchBox then
-        searchBox:SetWidth(sidebarWidth - 20)
+        searchBox:SetWidth(sidebarWidth - 10)
     end
 
     -- Clip child width
@@ -1256,7 +1309,7 @@ function MessageBox:SelectContact(contact)
     MessageBox:UpdateChatHistory(unreadToPass, true)
     
     if MessageBox.whisperInput then
-        MessageBox.whisperInput:SetFocus()
+        MessageBox:ScheduleWhisperInputFocus()
     end
 
     MessageBox:AddToWhoQueue(contact)
@@ -1353,7 +1406,6 @@ function MessageBox:SendWhisper()
         return
     end
 
-    MessageBox:AddMessage(MessageBox.selectedContact, message, true)
     SendChatMessage(message, "WHISPER", nil, MessageBox.selectedContact)
     
     MessageBox.whisperInput:SetText("")
@@ -1380,6 +1432,11 @@ function MessageBox:SendWhisper()
     end
 end
 
+function MessageBox:ScheduleWhisperInputFocus()
+    if not self.whisperInput then return end
+    self.pendingWhisperFocusFrames = 2
+end
+
 function MessageBox:ShowFrame()
     if not self.frame then self:CreateFrame() end
     self.frame:Show()
@@ -1392,13 +1449,14 @@ function MessageBox:ShowFrame()
         self:UpdateChatHistory()
         MessageBox:AddToWhoQueue(self.selectedContact)
     end
-    if self.whisperInput then self.whisperInput:SetFocus() end
+    if self.whisperInput then self:ScheduleWhisperInputFocus() end
 end
 
 function MessageBox:HideFrame()
     if self.chatSearchActive then
         self:CloseSearchBar()
     end
+    self.pendingWhisperFocusFrames = nil
     if self.frame then self.frame:Hide() end
 end
 
