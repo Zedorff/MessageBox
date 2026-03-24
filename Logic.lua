@@ -401,6 +401,13 @@ function MessageBox:SetupHooks()
         self.original_ChatFrame_SendTell = ChatFrame_SendTell
         ChatFrame_SendTell = function(name, chatFrame)
             if MessageBox.settings.interceptWhispers then
+                -- Blizzard calls SendTell while handling an incoming whisper; suppress when we
+                -- already marked this sender (user is viewing another conversation in the main frame).
+                local suppress = MessageBox.suppressSendTellForSwitch
+                if suppress and name and string.lower(suppress) == string.lower(name) then
+                    MessageBox.suppressSendTellForSwitch = nil
+                    return
+                end
                 MessageBox:SelectContact(name)
                 MessageBox:ShowFrame()
                 return
@@ -416,6 +423,16 @@ function MessageBox:SetupHooks()
                 and (event == "CHAT_MSG_SYSTEM" or event == "CHAT_MSG_INFO")
                 and MessageBox:IsLikelyWhoResultLine(arg1) then
                 return
+            end
+            -- Mark the next SendTell for this sender so we can ignore it if the main frame is
+            -- open on another conversation (AddMessage may also skip SelectContact in that case).
+            if event == "CHAT_MSG_WHISPER" and MessageBox.settings.interceptWhispers then
+                local sender = arg2
+                local sel = MessageBox.selectedContact
+                if sender and sel and MessageBox.frame and MessageBox.frame:IsVisible()
+                    and string.lower(sel) ~= string.lower(sender) then
+                    MessageBox.suppressSendTellForSwitch = sender
+                end
             end
             if MessageBox.settings.suppressWhispers then
                 if event == "CHAT_MSG_WHISPER" or event == "CHAT_MSG_WHISPER_INFORM" then
@@ -495,13 +512,19 @@ function MessageBox:AddMessage(contact, message, isOutgoing)
             self:UpdateMinimapBadge()
             
             if self.settings.openWindowOnWhisper then
-                self:SelectContact(contact)
-                self:ShowFrame()
-                if self.settings.notificationSound then
-                    PlaySoundFile("Interface\\AddOns\\MessageBox\\sound\\notification.wav")
+                -- Only jump to the sender when we are not already focused on another conversation
+                -- in an open main window (otherwise use unread counts / list like when this is off).
+                local viewingOther = self.frame and self.frame:IsVisible() and self.selectedContact
+                    and string.lower(self.selectedContact) ~= string.lower(contact)
+                if not viewingOther then
+                    self:SelectContact(contact)
+                    self:ShowFrame()
+                    if self.settings.notificationSound then
+                        PlaySoundFile("Interface\\AddOns\\MessageBox\\sound\\notification.wav")
+                    end
+                    -- SelectContact already refreshed chatHistory; skip incremental AddMessage below
+                    return
                 end
-                -- SelectContact already refreshed chatHistory; skip incremental AddMessage below
-                return
             elseif self.settings.popupNotificationsEnabled and (not self.frame or not self.frame:IsVisible()) then
                 self:ShowNotificationPopup()
             end
