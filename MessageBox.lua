@@ -9,9 +9,9 @@ function MessageBox:OnLoad()
     MessageBox.eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
     MessageBox.eventFrame:RegisterEvent("FRIENDLIST_UPDATE")
     MessageBox.eventFrame:RegisterEvent("CHAT_MSG_SYSTEM")
-    MessageBox.eventFrame:RegisterEvent("WHO_LIST_UPDATE")
     MessageBox.eventFrame:RegisterEvent("CHAT_MSG_AFK")
     MessageBox.eventFrame:RegisterEvent("CHAT_MSG_DND")
+    MessageBox.eventFrame:RegisterEvent("WHO_LIST_UPDATE")
     
     SLASH_MESSAGEBOX1 = "/messagebox"
     SLASH_MESSAGEBOX2 = "/mb"
@@ -39,12 +39,13 @@ function MessageBox:OnLoad()
 
     MessageBox:SetupHooks()
     
-    MessageBox.whoElapsed = 0
+    MessageBox.mbSecondTick = 0
     MessageBox.eventFrame:SetScript("OnUpdate", function()
-        MessageBox.whoElapsed = MessageBox.whoElapsed + arg1
-        if MessageBox.whoElapsed < 1 then return end
-        MessageBox.whoElapsed = 0
         MessageBox:ProcessWhoQueue()
+
+        MessageBox.mbSecondTick = MessageBox.mbSecondTick + arg1
+        if MessageBox.mbSecondTick < 1 then return end
+        MessageBox.mbSecondTick = 0
 
         -- Periodic crash save flush
         if MessageBox.hasNampower then
@@ -105,25 +106,27 @@ function MessageBox:OnEvent(event)
             end
         end
 
-        -- Restore persistent class/level data into playerCache
+        -- Restore persistent WHO snapshot into playerCache (classCache)
         if MessageBox.settings.classCache then
             for name, info in pairs(MessageBox.settings.classCache) do
                 if not MessageBox.playerCache[name] then
                     MessageBox.playerCache[name] = {}
                 end
+                local p = MessageBox.playerCache[name]
                 if info.class then
-                    MessageBox.playerCache[name].class = info.class
-                    MessageBox.playerCache[name].classUpper = info.classUpper
+                    p.class = info.class
+                    p.classUpper = info.classUpper
                 end
-                if info.level then
-                    MessageBox.playerCache[name].level = info.level
-                end
+                if info.level then p.level = info.level end
+                if info.race then p.race = info.race end
+                if info.guild ~= nil then p.guild = info.guild end
             end
         end
 
         MessageBox.searchQuery = "" 
         MessageBox:CreateMinimapButton()
 
+        MessageBox:InstallWhoUiHooks()
         if MessageBox_pfUISkin then
             MessageBox_pfUISkin()
         end
@@ -209,10 +212,12 @@ function MessageBox:OnEvent(event)
         if MessageBox.frame and MessageBox.frame:IsVisible() then
             MessageBox:MarkContactListDirty()
         end
-        
+
     elseif event == "WHO_LIST_UPDATE" then
-        MessageBox:HandleWhoResult()
-    
+        if MessageBox.settings and MessageBox.settings.backgroundWho and MessageBox.whoScanInProgress then
+            MessageBox:ApplyWhoListUpdate()
+        end
+        
     elseif event == "CHAT_MSG_AFK" then
         local message = arg1
         local sender = arg2
